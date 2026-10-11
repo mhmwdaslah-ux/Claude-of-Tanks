@@ -37,6 +37,12 @@ interface YardVehicle {
 }
 interface YardVehiclePool { meta: { hw?: number; hl?: number; r: number }; mats4: Matrix4[] }
 interface PlacementReceipt { attempted: number; accepted: number; unsafe: number; unavailable: number }
+/** Module scratch: `compose`/`makeRotationFromQuaternion` copy synchronously. */
+const _composePos = new Vector3();
+const _composeQuat = new Quaternion();
+const _composeScale = new Vector3();
+const _poseQuat = new Quaternion();
+const _upY = new Vector3(0, 1, 0);
 export interface LoggingYardReceipt {
   flatbeds: PlacementReceipt; bundles: PlacementReceipt; clearcut: PlacementReceipt;
   campsMoved: 0;
@@ -72,8 +78,8 @@ function relocateVehicle(record: YardVehicle, pool: YardVehiclePool, field: Yard
   const y = Math.min(field.getHeightAt(point.x, point.z) - 0.04, support.y);
   record.x = point.x; record.z = point.z; record.y = y; record.yaw = point.yaw;
   record.groundSupport = { mode: 'obb', ...support };
-  pool.mats4[record.slot].compose(new Vector3(point.x, y, point.z),
-    new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), point.yaw), new Vector3(record.sc, record.sc, record.sc));
+  pool.mats4[record.slot].compose(_composePos.set(point.x, y, point.z),
+    _composeQuat.setFromAxisAngle(_upY, point.yaw), _composeScale.set(record.sc, record.sc, record.sc));
   const rx = hw * Math.abs(Math.cos(point.yaw)) + hl * Math.abs(Math.sin(point.yaw)) + 0.05;
   const rz = hw * Math.abs(Math.sin(point.yaw)) + hl * Math.abs(Math.cos(point.yaw)) + 0.05;
   for (const ob of [record.ob, record.col]) {
@@ -85,16 +91,16 @@ function relocateVehicle(record: YardVehicle, pool: YardVehiclePool, field: Yard
 }
 
 function timberPose(piece: FieldTimberPiece, field: YardTerrain, point: YardPose) {
-  const q = new Quaternion();
+  const q = _poseQuat;
   if (piece.grounding.kind === 'fallen-log') {
     const p = planGroundedSegment(field, point.x, point.z, Math.cos(point.yaw), -Math.sin(point.yaw),
       piece.length, piece.radius * 0.85, piece.radius * 0.1);
-    q.setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(p.axisX, p.axisY, p.axisZ));
+    q.setFromUnitVectors(_upY, _composePos.set(p.axisX, p.axisY, p.axisZ));
     return { matrix: new Matrix4().makeRotationFromQuaternion(q).setPosition(p.x, p.y, p.z),
       receipt: { x: p.x, y: p.y, z: p.z, relief: p.relief, start: p.start, end: p.end } };
   }
   const support = sampleDiscGround(field, point.x, point.z, piece.radius, 0.06);
-  q.setFromAxisAngle(new Vector3(0, 1, 0), point.yaw);
+  q.setFromAxisAngle(_upY, point.yaw);
   return { matrix: new Matrix4().makeRotationFromQuaternion(q).setPosition(point.x, support.y + piece.height / 2, point.z),
     receipt: { x: point.x, y: support.y, z: point.z, relief: support.spread, supportMin: support.min, supportMax: support.max } };
 }

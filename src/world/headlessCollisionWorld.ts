@@ -48,10 +48,29 @@ export interface HeadlessRayHit {
   record: CollisionRecord | null;
 }
 
+/** Caller-owned raycast result. `raycastInto` writes point/normal in place. */
+export interface HeadlessRayHitOut {
+  point: Vector3;
+  normal: Vector3;
+  dist: number;
+  kind: 'terrain' | 'prop';
+  record: CollisionRecord | null;
+}
+
 export interface HeadlessCollisionWorld {
   mapId?: string;
   heightField: HeightField;
   raycast(origin: Vector3, direction: Vector3, maxDistance: number): HeadlessRayHit | null;
+  /**
+   * Allocation-free raycast. Writes into caller-owned `out` and returns it,
+   * or null on a miss (`out` untouched). The same `out` must not be retained
+   * across a second `raycastInto` call — consume it synchronously.
+   */
+  raycastInto(
+    origin: Vector3, direction: Vector3, maxDistance: number, out: HeadlessRayHitOut,
+  ): HeadlessRayHitOut | null;
+  /** Allocation-free miss test: hit distance, or -1 on a miss. */
+  raycastDistance(origin: Vector3, direction: Vector3, maxDistance: number): number;
   getObstacles(): CollisionRecord[];
   getColliders(): CollisionRecord[];
   getConcealment(): ConcealmentRecord[];
@@ -201,6 +220,21 @@ export function createHeadlessCollisionWorld(
   }
 
   function raycast(origin: Vector3, direction: Vector3, maxDistance: number): HeadlessRayHit | null {
+    return raycastInto(origin, direction, maxDistance, {
+      point: new Vector3(),
+      normal: new Vector3(),
+      dist: 0,
+      kind: 'terrain',
+      record: null,
+    });
+  }
+
+  function raycastInto(
+    origin: Vector3,
+    direction: Vector3,
+    maxDistance: number,
+    out: HeadlessRayHitOut,
+  ): HeadlessRayHitOut | null {
     const propHit = nearestColliderHit(origin, direction, maxDistance);
     const terrainDistance = terrainHitDistance(
       origin,
@@ -219,17 +253,29 @@ export function createHeadlessCollisionWorld(
     } else {
       return null;
     }
-    const hitPoint = new Vector3().copy(direction).multiplyScalar(hitDistance).add(origin);
-    const normal = kind === 'terrain'
-      ? worldHeightField.getNormalAt(hitPoint.x, hitPoint.z).clone()
-      : bestNormal.clone();
-    return {
-      point: hitPoint,
-      normal,
-      dist: hitDistance,
-      kind,
-      record: kind === 'prop' ? propHit.record : null,
-    };
+    out.point.copy(direction).multiplyScalar(hitDistance).add(origin);
+    if (kind === 'terrain') {
+      const n = worldHeightField.getNormalAt(out.point.x, out.point.z);
+      out.normal.set(n.x, n.y, n.z);
+    } else {
+      out.normal.copy(bestNormal);
+    }
+    out.dist = hitDistance;
+    out.kind = kind;
+    out.record = kind === 'prop' ? propHit.record : null;
+    return out;
+  }
+
+  function raycastDistance(origin: Vector3, direction: Vector3, maxDistance: number): number {
+    const propHit = nearestColliderHit(origin, direction, maxDistance);
+    const terrainDistance = terrainHitDistance(
+      origin,
+      direction,
+      Math.min(maxDistance, propHit.distance),
+    );
+    if (terrainDistance >= 0 && terrainDistance < propHit.distance) return terrainDistance;
+    if (propHit.record && propHit.distance <= maxDistance) return propHit.distance;
+    return -1;
   }
 
   function crushObstacle(obstacle: CollisionRecord | null | undefined) {
@@ -258,6 +304,8 @@ export function createHeadlessCollisionWorld(
     mapId,
     heightField: worldHeightField,
     raycast,
+    raycastInto,
+    raycastDistance,
     getObstacles: () => obstacles,
     getColliders: () => colliders,
     getConcealment: () => concealers,

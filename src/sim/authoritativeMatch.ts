@@ -332,6 +332,19 @@ const _muzzle = new Vector3();
 const _gunDir = new Vector3();
 const _segmentDir = new Vector3();
 const _worldTraceOrigin = new Vector3();
+/**
+ * Scratch raycast result for the allocation-free `raycastInto` fast path.
+ * Consumed synchronously by the shell loop before the next raycast, so
+ * aliasing `WorldTrace.normal` to this scratch object is safe. Backends
+ * without `raycastInto` keep the previous allocating behavior.
+ */
+const _worldHitOut = {
+  point: new Vector3(),
+  normal: new Vector3(),
+  dist: 0,
+  kind: 'terrain' as 'terrain' | 'prop',
+  record: null as AuthoritativeObstacle | null,
+};
 const _hullMatrix = new Matrix4();
 const _turretMatrix = new Matrix4();
 const _localMatrix = new Matrix4();
@@ -602,7 +615,17 @@ function segmentWorldHit(
     const distance = _segmentDir.length();
     if (distance <= 1e-9) return null;
     _segmentDir.multiplyScalar(1 / distance);
-    const hit = worldCollision.raycast(from, _segmentDir, distance);
+    const into = (worldCollision as unknown as {
+      raycastInto?: (
+        origin: SpottingVector3,
+        direction: SpottingVector3,
+        maxDistance: number,
+        out: typeof _worldHitOut,
+      ) => typeof _worldHitOut | null;
+    }).raycastInto;
+    const hit = typeof into === 'function'
+      ? into.call(worldCollision, from, _segmentDir, distance, _worldHitOut)
+      : worldCollision.raycast(from, _segmentDir, distance);
     return hit ? {
       t: Math.max(0, Math.min(1, hit.dist / distance)),
       kind: hit.kind,
