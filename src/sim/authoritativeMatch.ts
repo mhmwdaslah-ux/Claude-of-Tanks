@@ -221,6 +221,15 @@ export interface AuthoritativeWorldCollision {
     direction: SpottingVector3,
     maxDistance: number,
   ): AuthoritativeWorldRayHit | null;
+  /**
+   * Optional allocation-free miss test (hit distance, or -1 on a miss).
+   * Shell-adjacent LOS paths prefer it when present; no behavior change.
+   */
+  raycastDistance?(
+    origin: SpottingVector3,
+    direction: SpottingVector3,
+    maxDistance: number,
+  ): number;
   crushObstacle?(
     obstacle: AuthoritativeObstacle,
     directionX: number,
@@ -785,9 +794,17 @@ export function createAuthoritativeMatch({
       const hitT = segmentTerrainHit(heightField, origin, _aim);
       return hitT == null ? null : { dist: hitT * maxDistance, kind: 'terrain' };
     };
+  const spottingRaycastDistance: ((
+    origin: SpottingVector3,
+    direction: SpottingVector3,
+    maxDistance: number,
+  ) => number) | null = worldCollision && typeof worldCollision.raycastDistance === 'function'
+    ? (origin, direction, maxDistance) => worldCollision.raycastDistance!(origin, direction, maxDistance)
+    : null;
   const spotting = createSpottingSystem({
     getTanks: () => entities,
     raycast: spottingRaycast,
+    ...(spottingRaycastDistance ? { raycastDistance: spottingRaycastDistance } : {}),
     concealers: worldCollision && typeof worldCollision.getConcealment === 'function'
       ? worldCollision.getConcealment() : [],
     getEquipment: (entity) => entityById.get(entity.id)?.equip ?? null,
@@ -813,6 +830,7 @@ export function createAuthoritativeMatch({
       deps: {
         heightField,
         raycast: spottingRaycast,
+        ...(spottingRaycastDistance ? { raycastDistance: spottingRaycastDistance } : {}),
         getEnemies: () => opponents,
         getAllies: () => allies,
         getObstacles: () => staticObstacles,

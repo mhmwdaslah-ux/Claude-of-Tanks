@@ -30,6 +30,22 @@ export interface ActiveWorld<SkyConfig extends object = object> {
     direction: THREE.Vector3,
     maxDistance: number,
   ): WorldRaycastHit | null;
+  /**
+   * Optional allocation-free raycast (see WorldRuntime.raycastInto).
+   * The activation facade prefers it and emulates it otherwise.
+   */
+  raycastInto?(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    maxDistance: number,
+    out: WorldRaycastHit,
+  ): WorldRaycastHit | null;
+  /** Optional allocation-free miss test (hit distance, or -1 on a miss). */
+  raycastDistance?(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    maxDistance: number,
+  ): number;
 }
 
 export type WorldActivationStage = 'build' | 'present' | 'compile' | 'shadowWarm' | 'clouds' | 'activate';
@@ -130,6 +146,22 @@ export interface WorldActivationRuntime<
     direction: THREE.Vector3,
     maxDistance: number,
   ): WorldRaycastHit | null;
+  /**
+   * Allocation-free raycast into caller-owned `out` (null on a miss).
+   * Consume synchronously; emulated via `raycast` for legacy worlds.
+   */
+  raycastInto(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    maxDistance: number,
+    out: WorldRaycastHit,
+  ): WorldRaycastHit | null;
+  /** Allocation-free miss test: hit distance, or -1 on a miss. */
+  raycastDistance(
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    maxDistance: number,
+  ): number;
   buildMinimap(world: World, textured?: boolean): void;
   queueMinimap(world?: World | null): Promise<boolean> | null;
   prepareServices(world?: World | null): void;
@@ -465,6 +497,28 @@ export function createWorldActivationRuntime<
     },
     raycast(origin, direction, maxDistance) {
       return current?.raycast(origin, direction, maxDistance) ?? null;
+    },
+    raycastInto(origin, direction, maxDistance, out) {
+      const world = current;
+      if (world && typeof world.raycastInto === 'function') {
+        return world.raycastInto(origin, direction, maxDistance, out) ?? null;
+      }
+      // Legacy/custom worlds: emulate without changing their behavior.
+      const hit = world?.raycast(origin, direction, maxDistance) ?? null;
+      if (!hit) return null;
+      out.point.copy(hit.point);
+      out.normal.copy(hit.normal);
+      out.dist = hit.dist;
+      out.kind = hit.kind;
+      return out;
+    },
+    raycastDistance(origin, direction, maxDistance) {
+      const world = current;
+      if (world && typeof world.raycastDistance === 'function') {
+        return world.raycastDistance(origin, direction, maxDistance);
+      }
+      const hit = world?.raycast(origin, direction, maxDistance);
+      return hit ? hit.dist : -1;
     },
     buildMinimap: (world, textured = true) => options.buildMinimap(world, textured),
     queueMinimap,

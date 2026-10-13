@@ -357,6 +357,12 @@ export interface FxRuntime {
   setFrozen(frozen: boolean, atTimeS?: number | null): void;
   resetSeed(seed: number): void;
   resetAll(): void;
+  /**
+   * EYE-COMFORT r1: override the flash/fire brightness scaler (0.35-1,
+   * clamped). Lets the adaptive-quality governor soften flash-bang peaks
+   * under sustained overload; desktop default is 1 (no-op).
+   */
+  setFlashComfort?(comfort: number): void;
   composeFiringMoment(moment: FiringMoment): void;
   composeExplosionMoment(moment: ExplosionMoment): void;
 }
@@ -507,11 +513,13 @@ const COLUMN_TICK_S = 0.05;
 // a laser-straight stack. Matches the world wind's general drift direction.
 const COLUMN_WIND_X = 0.82, COLUMN_WIND_Z = 0.28;
 // PERF: cap concurrent smoke-column emitters. Late battle every wreck runs a
-// 30 s column at dozens of puffs/s; 5+ simultaneous columns is pure
+// 30 s column at dozens of puffs/s; 4+ simultaneous columns is pure
 // fill-rate pile-up at retina resolutions (measured 25-28 ms frames in
-// the 60 s probe tail). 4 columns reads identically in battle — when a 5th
+// the 60 s probe tail). 3 columns reads identically in battle — when a 4th
 // kill lands, the column closest to burning out is retired early.
-const MAX_COLUMNS = 4;
+// EYE-COMFORT r1: 4 -> 3 also trims late-battle ember/smoke overdraw on
+// small bright phone screens where columns stack across the whole frame.
+const MAX_COLUMNS = 3;
 
 // ---------------------------------------------------------------------------
 // Tracer shader (instanced stretched additive ribbon, camera-facing)
@@ -826,6 +834,22 @@ export function createFx(
 
   let rng = mulberry32(seed);
   let frozen = false;
+  // EYE-COMFORT r1: master scaler for flash/fire brightness. Desktop default
+  // stays 1 (established muzzle/destruction receipts unchanged); coarse-
+  // pointer devices (phones/tablets) start at 0.6 — full-white alpha-1.0
+  // cores and 460/520-peak lights stop flash-banging small bright screens,
+  // and dimmer additive cards feed less energy into the bloom pass
+  // (fill-rate win on weak mobile GPUs). setFlashComfort lets the quality
+  // governor tighten it further under sustained overload. Guarded for
+  // Node/headless (no window there).
+  let flashComfortK = 1;
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches) {
+    flashComfortK = 0.6;
+  }
+  function setFlashComfort(k: number): void {
+    if (Number.isFinite(k)) flashComfortK = THREE.MathUtils.clamp(k, 0.35, 1);
+  }
   // Killcam reconstruction temporarily presents a pre-impact tank in the
   // same world as its already-recorded destruction. Keep the pooled scene
   // objects alive (stable Three.js light/program counts), but do not let the
@@ -1994,8 +2018,11 @@ export function createFx(
     const axSize = (1 - 0.32 * axial * axial) * nearS * dkF;
     // core-card variant of axSize (softened distance boost — see dkC)
     const axSizeC = (1 - 0.32 * axial * axial) * nearS * dkC;
-    const axAtt = (1 - 0.48 * axial * axial) * nearA;
-    const lightK = (1 - 0.5 * axial * axial) * (0.55 + 0.45 * nearAtt);
+    // EYE-COMFORT r1: every muzzle flash/jet card alpha below derives from
+    // axAtt, and the muzzle light from lightK — scaling the two master gains
+    // softens the whole stack at once without touching geometry/counts.
+    const axAtt = (1 - 0.48 * axial * axial) * nearA * flashComfortK;
+    const lightK = (1 - 0.5 * axial * axial) * (0.55 + 0.45 * nearAtt) * flashComfortK;
     const state = muzzleFlashState;
     state.pos.copy(pos);
     state.dir.copy(dir);
@@ -2291,7 +2318,9 @@ export function createFx(
       _puffO.size0 = 0.8 * s; _puffO.size1 = 2.6 * s;
       _puffO.rot = rng() * Math.PI * 2; _puffO.rotVel = (rng() - 0.5) * 5;
       col3(0xfff0b0, _puffO.col0); col3(0xe65c14, _puffO.col1);
-      _puffO.alpha = 1.0; _puffO.grav = 2; _puffO.birthOffset = birthOffset;
+      // EYE-COMFORT r1: alpha-1.0 white-hot cores flash-bang small screens —
+      // scale with comfort (desktop 1: unchanged).
+      _puffO.alpha = flashComfortK; _puffO.grav = 2; _puffO.birthOffset = birthOffset;
       particles.emit('fire', _puffO);
     }
     impactSmoke(_sv.set(pos.x, pos.y + 0.4, pos.z), _UP, 8, 1.6 * s, 0x2c2a28, 0x565450, 0.7, birthOffset);
@@ -2316,7 +2345,8 @@ export function createFx(
       _puffO.size0 = (1.4 + rng()) * dk; _puffO.size1 = (3.2 + rng() * 1.2) * dk;
       _puffO.rot = rng() * Math.PI * 2; _puffO.rotVel = (rng() - 0.5) * 3;
       col3(0xffffff, _puffO.col0); col3(0xffb040, _puffO.col1);
-      _puffO.alpha = 1.0; _puffO.grav = 0; _puffO.birthOffset = birthOffset;
+      // EYE-COMFORT r1: see heFireball — pure-white alpha-1.0 flash cards.
+      _puffO.alpha = flashComfortK; _puffO.grav = 0; _puffO.birthOffset = birthOffset;
       particles.emit('flash', _puffO);
     }
   }
@@ -2982,7 +3012,8 @@ export function createFx(
     // 2.4 m above the hull: warm falloff over wreck/terrain without nuking
     // the hull albedo to flat orange.
     flashLight(lightStates[1], _sv.set(pos.x, cy + 3.6, pos.z),
-      EXPLOSION_LIGHT_PEAK * (burn ? 0.5 : 1), Math.max(0, -birthOffset));
+      // EYE-COMFORT r1: comfort-scale the blast peak (desktop 1: unchanged).
+      EXPLOSION_LIGHT_PEAK * (burn ? 0.5 : 1) * flashComfortK, Math.max(0, -birthOffset));
     // INSTANT dark smoke stalk (r7 distant-kill readability): a column of
     // dense near-black puffs already standing 4-14 m over the wreck at the
     // moment of the blast, so a 200-400 m kill shows a rising black marker
@@ -3223,7 +3254,8 @@ export function createFx(
       const time = particles.getTime();
       explosionLight.intensity = (
         9.5 + 3.2 * Math.sin(time * 13.7) + 2.2 * Math.sin(time * 7.1 + 1.9)
-      ) * col.scale;
+        // EYE-COMFORT r1: living wreck-fire light also respects comfort.
+      ) * col.scale * flashComfortK;
       return;
     }
     if (lightAge(explosionState) < explosionState.dur && explosionLight.distance !== 13) {
@@ -4562,7 +4594,8 @@ export function createFx(
         particles.emit('dust', _puffO);
       }
       _sv.copy(pos); _sv.y += 0.45;
-      flashLight(lightStates[1], _sv, EXPLOSION_LIGHT_PEAK * 0.08 * k, 0);
+      // EYE-COMFORT r1: impact ground-blast light respects comfort.
+      flashLight(lightStates[1], _sv, EXPLOSION_LIGHT_PEAK * 0.08 * k * flashComfortK, 0);
     },
 
     /**
@@ -5085,6 +5118,14 @@ export function createFx(
      */
     resetSeed(newSeed: number): void {
       rng = mulberry32(newSeed);
+    },
+
+    /**
+     * EYE-COMFORT r1: override the flash/fire brightness scaler (0.35-1).
+     * @param {number} comfort
+     */
+    setFlashComfort(comfort: number): void {
+      setFlashComfort(comfort);
     },
 
     /** Kill all particles, tracers, decals, timers, emitters and lights. */

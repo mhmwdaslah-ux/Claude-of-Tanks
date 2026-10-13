@@ -291,6 +291,26 @@ interface SoloWorld {
   spawnPoints: { player: SpawnPoint; enemies: SpawnPoint[] };
   heightField: SoloHeightField;
   raycast(origin: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }, maxDist: number): SoloWorldHit | null;
+  /**
+   * Optional allocation-free raycast (see WorldRuntime.raycastInto).
+   * When present the shell sweep prefers it; the result is consumed
+   * synchronously before the next sweep, so scratch aliasing is safe.
+   */
+  raycastInto?(
+    origin: { x: number; y: number; z: number },
+    direction: { x: number; y: number; z: number },
+    maxDist: number,
+    out: SoloWorldHit,
+  ): SoloWorldHit | null;
+  /**
+   * Optional allocation-free miss test (hit distance, or -1 on a miss).
+   * Spotting/AI LOS prefer it when present; no behavior change.
+   */
+  raycastDistance?(
+    origin: { x: number; y: number; z: number },
+    direction: { x: number; y: number; z: number },
+    maxDist: number,
+  ): number;
   getObstacles(): SoloObstacle[];
   queryObstacles?: (
     minX: number,
@@ -463,6 +483,17 @@ const _spawnPos = new THREE.Vector3();
 const _contactCenter = new THREE.Vector3();
 const _playerShotOrigin = new THREE.Vector3();
 const _playerShotRecipients: SoloEntity[] = [];
+/**
+ * Scratch solo shell-trace hit for the allocation-free `raycastInto` path.
+ * Consumed synchronously inside stepLiveShell before the next shell's sweep.
+ */
+const _soloHitOut: SoloWorldHit = {
+  dist: 0,
+  point: new THREE.Vector3(),
+  normal: new THREE.Vector3(),
+  kind: 'terrain',
+  record: null,
+};
 const _nearestTankTrace: NearestTankTrace = {
   distance: Infinity,
   entity: null,
@@ -610,6 +641,8 @@ function createBattleSpotting(game: SoloGameState, world: SoloWorld): SpottingSy
   return createSpottingSystem({
     getTanks: () => game.tanks as SpottingTank[],
     raycast: world.raycast,
+    ...(typeof world.raycastDistance === 'function'
+      ? { raycastDistance: world.raycastDistance } : {}),
     concealers: world.getConcealment?.() || [],
     getCamoBonus: (tank) => {
       const entity = tank as SpottingTank & { specId: string };
@@ -1047,6 +1080,8 @@ export function setupBattle(
   const aiDeps = {
     heightField: world.heightField,
     raycast: world.raycast,
+    ...(typeof world.raycastDistance === 'function'
+      ? { raycastDistance: world.raycastDistance } : {}),
     getObstacles: () => world.getObstacles(),
     queryObstacles: world.queryObstacles || null,
     // BATTLE-AI r7: vegetation concealment discs — scouts pick spotting legs
@@ -1894,10 +1929,13 @@ function traceBlockingWorldShellHit(
 ): BlockingWorldShellHit | null {
   _worldRayOrigin.copy(shell.prevPos);
   let travelled = 0;
+  const fastRaycast = typeof world.raycastInto === 'function' ? world.raycastInto : null;
   for (let pass = 0; pass < MAX_SHELL_PASS_THROUGH_HITS_PER_STEP; pass++) {
     const remaining = segmentLength - travelled;
     if (remaining <= 0) return null;
-    const hit = world.raycast(_worldRayOrigin, _seg, remaining);
+    const hit = fastRaycast
+      ? fastRaycast.call(world, _worldRayOrigin, _seg, remaining, _soloHitOut)
+      : world.raycast(_worldRayOrigin, _seg, remaining);
     if (!hit) return null;
     const localDistance = Math.max(0, hit.dist);
     const distance = travelled + localDistance;

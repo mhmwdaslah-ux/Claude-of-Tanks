@@ -91,6 +91,15 @@ export interface SpottingDependencies {
     direction: SpottingVector3,
     maxDist: number,
   ) => SpottingRayHit | null | undefined;
+  /**
+   * Optional allocation-free miss test (hit distance, or -1 on a miss).
+   * hardLos prefers it when present; pure fast path, no behavior change.
+   */
+  raycastDistance?(
+    origin: SpottingVector3,
+    direction: SpottingVector3,
+    maxDist: number,
+  ): number;
   concealers?: ConcealerDisc[];
   getCamoBonus?: (tank: SpottingTank) => number;
   getEquipment?: (tank: SpottingTank) => readonly string[] | null | undefined;
@@ -519,6 +528,7 @@ export function createSpottingSystem(deps: SpottingDependencies): SpottingSystem
     throw new Error('createSpottingSystem: deps.getTanks is required');
   }
   const raycast = typeof deps.raycast === 'function' ? deps.raycast : null;
+  const raycastDistance = typeof deps.raycastDistance === 'function' ? deps.raycastDistance : null;
   const concealers = deps.concealers || [];
   const getCamoBonus = typeof deps.getCamoBonus === 'function' ? deps.getCamoBonus : () => 0;
   const getEquipment = typeof deps.getEquipment === 'function' ? deps.getEquipment : () => null;
@@ -567,7 +577,7 @@ export function createSpottingSystem(deps: SpottingDependencies): SpottingSystem
 
   /** Hard-cover LOS: clear to either the turret top or the hull center. */
   function hardLos(spotter: SpottingTank, target: SpottingTank): boolean {
-    if (!raycast) return true;
+    if (!raycast && !raycastDistance) return true;
     const sp = spotter.state.pos, tp = target.state.pos;
     const h = target.spec.dims ? target.spec.dims.heightM : 2.6;
     const sy = eyeY(spotter);
@@ -578,7 +588,12 @@ export function createSpottingSystem(deps: SpottingDependencies): SpottingSystem
       if (dist < 1e-3) return true;
       _d.x = dx / dist; _d.y = dy / dist; _d.z = dz / dist;
       raycastCalls++;
-      const hit = raycast(_o, _d, dist);
+      if (raycastDistance) {
+        const hitDist = raycastDistance(_o, _d, dist);
+        if (hitDist < 0 || hitDist > dist - LOS_TOLERANCE_M) return true;
+        continue;
+      }
+      const hit = raycast!(_o, _d, dist);
       if (!hit || hit.dist > dist - LOS_TOLERANCE_M) return true;
     }
     return false;

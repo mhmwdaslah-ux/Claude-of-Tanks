@@ -123,6 +123,16 @@ export interface WorldRuntime {
   heightField: WorldHeightField;
   minimapTextureState: SourcedTextureState;
   raycast(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): WorldRayHit | null;
+  /**
+   * Allocation-free raycast. Writes into caller-owned `out` and returns it,
+   * or null on a miss (`out` untouched). Consume synchronously — the next
+   * `raycastInto` call reuses shared scratch for the prop-normal path.
+   */
+  raycastInto(
+    origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number, out: WorldRayHit,
+  ): WorldRayHit | null;
+  /** Allocation-free miss test: hit distance, or -1 on a miss. */
+  raycastDistance(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number;
   getObstacles(): CollisionRecord[];
   getColliders(): CollisionRecord[];
   queryObstacles: ObstacleQuery;
@@ -416,6 +426,21 @@ function assembleWorld(
     dir: THREE.Vector3,
     maxDist: number,
   ): WorldRayHit | null {
+    return raycastInto(origin, dir, maxDist, {
+      point: new THREE.Vector3(),
+      normal: new THREE.Vector3(),
+      dist: 0,
+      kind: 'terrain',
+      record: null,
+    });
+  }
+
+  function raycastInto(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+    out: WorldRayHit,
+  ): WorldRayHit | null {
     const propHit = nearestPropHit(origin, dir, maxDist);
     const terrainT = terrainHitDistance(origin, dir, Math.min(maxDist, propHit.distance));
     let hitT: number;
@@ -423,11 +448,25 @@ function assembleWorld(
     if (terrainT >= 0 && terrainT < propHit.distance) { hitT = terrainT; kind = 'terrain'; }
     else if (propHit.record && propHit.distance <= maxDist) { hitT = propHit.distance; kind = 'prop'; }
     else return null;
-    const point = new THREE.Vector3().copy(dir).multiplyScalar(hitT).add(origin);
-    const normal = kind === 'terrain'
-      ? heightField.getNormalAt(point.x, point.z).clone()
-      : _bestNrm.clone();
-    return { point, normal, dist: hitT, kind, record: kind === 'prop' ? propHit.record : null };
+    out.point.copy(dir).multiplyScalar(hitT).add(origin);
+    if (kind === 'terrain') out.normal.copy(heightField.getNormalAt(out.point.x, out.point.z));
+    else out.normal.copy(_bestNrm);
+    out.dist = hitT;
+    out.kind = kind;
+    out.record = kind === 'prop' ? propHit.record : null;
+    return out;
+  }
+
+  function raycastDistance(
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    maxDist: number,
+  ): number {
+    const propHit = nearestPropHit(origin, dir, maxDist);
+    const terrainT = terrainHitDistance(origin, dir, Math.min(maxDist, propHit.distance));
+    if (terrainT >= 0 && terrainT < propHit.distance) return terrainT;
+    if (propHit.record && propHit.distance <= maxDist) return propHit.distance;
+    return -1;
   }
 
   const unregisterDestructibles = props.registerDestructibles();
@@ -438,6 +477,8 @@ function assembleWorld(
     heightField,
     minimapTextureState,
     raycast,
+    raycastInto,
+    raycastDistance,
     /** @returns {Array<{min:number[],max:number[]}>} static obstacle AABBs */
     getObstacles: () => obstacles,
     /** Shell/LOS cover records; exposed for deterministic server manifests. */

@@ -225,6 +225,15 @@ interface AiDependencies {
     direction: { x: number; y: number; z: number },
     maxDistance: number,
   ): { dist: number } | null | undefined;
+  /**
+   * Optional allocation-free miss test (hit distance, or -1 on a miss).
+   * hasLos prefers it when present; pure fast path, no behavior change.
+   */
+  raycastDistance?(
+    origin: { x: number; y: number; z: number },
+    direction: { x: number; y: number; z: number },
+    maxDistance: number,
+  ): number;
   getEnemies(): AiEntity[];
   getAllies?(): AiEntity[];
   getObstacles(): AiObstacle[];
@@ -1078,6 +1087,10 @@ export function createAI(entity: AiEntity, opts: CreateAiOptions): AiController 
     const dist = _vB.length();
     if (dist < 1e-3) return true;
     _vB.multiplyScalar(1 / dist);
+    if (typeof deps.raycastDistance === 'function') {
+      const hitDist = deps.raycastDistance(_vA, _vB, dist);
+      return hitDist < 0 || hitDist > dist - 2.0;
+    }
     const hit = deps.raycast(_vA, _vB, dist);
     return !hit || hit.dist > dist - 2.0;
   }
